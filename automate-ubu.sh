@@ -1,81 +1,109 @@
 #!/bin/bash
-# This script automates the process of updating and upgrading a Debian/Ubuntu based Linux system.
-# It performs the following actions:
-# 1. Updates the package lists.
-# 2. Upgrades the installed packages to their newest versions.
-# 3. (Optional) Removes obsolete packages.
-# 4. (Optional) Checks for and installs available distribution upgrades.
-# 5. Logs the output to a file.
 #
-# Intended Use:
-# This script is designed to be run on Debian-based systems (e.g., Ubuntu, Mint).  It should be
-# run with superuser (root) privileges, or by a user with sudo privileges.
+# Script to automate system update and upgrade, with rsnapshot backup and error checking.
 #
-# Modifications:
-# You can customize the script by changing the variables below.  For example, you can
-# change the log file location, add additional commands, or change the options
-# passed to apt.
-
-# --- Configuration Variables ---
-LOG_FILE="/var/log/system_update_upgrade.log"  # Path to the log file
-REMOVE_OBSOLETE_PACKAGES="true"             # Set to "true" to remove obsolete packages after upgrading, "false" to skip
-RUN_DIST_UPGRADE="false"                   # Set to "true" to run a full distribution upgrade, "false" for a regular upgrade
-# --- End Configuration Variables ---
-
-# --- Helper Functions ---
-
-# Function to log messages to the console and the log file
+# Intended to be run as root (e.g., via cron).
+#
+# Configuration:
+#
+#  * This script assumes rsnapshot is already configured and working.
+#  * Specifically, it assumes you have a backup level named 'alpha' for daily backups.
+#  * Modify the RSNAPSHOT_CONFIG_FILE and RSNAPSHOT_BACKUP_BASE if needed.
+#  * Log file location is defined within the script.
+#
+# Variables
+RSNAPSHOT_CONFIG_FILE="/etc/rsnapshot.conf" # Default rsnapshot configuration file location.
+RSNAPSHOT_BACKUP_BASE="/var/cache/snapshots/" # Default backup location.  Make sure this matches your rsnapshot.conf
+LOG_FILE="/var/log/system_update_upgrade.log" # Log file to store script output.
+# Ensure the log file exists and is writable
+touch "$LOG_FILE"
+# Function to log messages with timestamps
 log_message() {
-    local message="$1"
-    echo "$(date) - $message" | tee -a "$LOG_FILE"
+  TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')
+  echo "$TIMESTAMP: $1" >> "$LOG_FILE"
 }
 
-# Function to check for root privileges
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log_message "Error: This script must be run as root or with sudo."
-        exit 1
-    fi
+# Function to perform the rsnapshot backup
+rsnapshot_backup() {
+  log_message "Starting rsnapshot backup (alpha)..."
+  # Use the config file.
+  rsnapshot -c "$RSNAPSHOT_CONFIG_FILE" alpha
+  if [ $? -eq 0 ]; then
+    log_message "rsnapshot backup (alpha) completed successfully."
+  else
+    log_message "ERROR: rsnapshot backup (alpha) failed!"
+    # Continue even if backup fails, but set overall error status.
+    ERROR_OCCURRED=1
+  fi
 }
 
-# --- Main Script ---
+# Function to update and upgrade the system
+update_upgrade_system() {
+  log_message "Starting system update and upgrade..."
 
-# 1. Check if the script is run with root privileges
-check_root
+  # Update the package lists
+  apt update
+  if [ $? -ne 0 ]; then
+    log_message "ERROR: apt update failed!"
+    ERROR_OCCURRED=1
+    return # Stop if update fails
+  else
+    log_message "apt update completed."
+  fi
 
-# 2. Start logging
-log_message "Starting system update and upgrade process..."
+  # Upgrade the packages
+  apt upgrade -y
+  if [ $? -ne 0 ]; then
+    log_message "ERROR: apt upgrade failed!"
+    ERROR_OCCURRED=1
+    return # Stop if upgrade fails
+  else
+    log_message "apt upgrade completed."
+  fi
+   # Dist-upgrade
+  apt dist-upgrade -y
+  if [ $? -ne 0 ]; then
+    log_message "ERROR: apt dist-upgrade failed!"
+    ERROR_OCCURRED=1
+    return # Stop if dist-upgrade fails
+  else
+    log_message "apt dist-upgrade completed."
+  fi
 
-# 3. Update the package lists
-log_message "Updating package lists..."
-sudo apt-get update -y 2>&1 | tee -a "$LOG_FILE"  # Redirect both stdout and stderr to the log
+  # Autoremove
+  apt autoremove -y
+  if [ $? -ne 0 ]; then
+    log_message "ERROR: apt autoremove failed!"
+    ERROR_OCCURRED=1
+    return
+  else
+    log_message "apt autoremove completed."
+  fi
 
-# 4. Upgrade the installed packages
-log_message "Upgrading packages..."
-sudo apt-get upgrade -y 2>&1 | tee -a "$LOG_FILE"
+  #If you want to automatically reboot
+  # reboot
+  # if [ $? -ne 0 ]; then
+  #   log_message "ERROR: reboot failed!"
+  #   ERROR_OCCURRED=1
+  # else
+  #  log_message "Rebooted System"
+  # fi
+}
 
-# 5. Optionally remove obsolete packages
-if [ "$REMOVE_OBSOLETE_PACKAGES" = "true" ]; then
-    log_message "Removing obsolete packages..."
-    sudo apt-get autoremove -y 2>&1 | tee -a "$LOG_FILE"
+# Main script logic
+ERROR_OCCURRED=0 # Initialize error flag
+
+# Perform the rsnapshot backup
+rsnapshot_backup
+
+# Perform the system update and upgrade
+update_upgrade_system
+
+# Check for errors and log the final status
+if [ $ERROR_OCCURRED -eq 0 ]; then
+  log_message "System update and upgrade process completed successfully."
 else
-    log_message "Skipping removal of obsolete packages."
+  log_message "System update and upgrade process completed with errors.  Check $LOG_FILE for details."
 fi
 
-# 6. Optionally perform a full distribution upgrade
-if [ "$RUN_DIST_UPGRADE" = "true" ]; then
-    log_message "Running distribution upgrade..."
-    sudo apt-get dist-upgrade -y 2>&1 | tee -a "$LOG_FILE"
-else
-    log_message "Skipping distribution upgrade."
-fi
-
-# 7. Check for errors during the upgrade process.  Simple check.
-if grep -q "Errors were encountered" "$LOG_FILE"; then
-    log_message "Error: Errors were encountered during the update/upgrade process. Check $LOG_FILE for details."
-    exit 1
-fi
-
-# 8. Finish
-log_message "System update and upgrade process completed."
 exit 0
